@@ -1,0 +1,7 @@
+test_run/*
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+data/origin_data/*
+wandb/*
