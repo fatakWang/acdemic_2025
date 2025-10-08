@@ -538,15 +538,16 @@ from transformers.models.t5.modeling_t5 import T5ForConditionalGeneration
 from torch.nn import CrossEntropyLoss
 from transformers.models.t5.configuration_t5 import T5Config
 from transformers.modeling_outputs import BaseModelOutput,Seq2SeqLMOutput
-
 class TIGER(T5ForConditionalGeneration):
     def __init__(self, config: T5Config):
         super().__init__(config)
         # You can add parameters out here.
         self.temperature = 1.0
 
-    def set_hyper(self,temperature):
-        self.temperature = temperature
+    def set_hyper(self,args,tokenizer):
+        self.temperature = args.temperature
+        self.args = args
+        self.tokenizer = tokenizer
 
 # 其实就是一个简简单单的cross entropy
 # 唯一的改变就是这个温度。
@@ -592,6 +593,7 @@ class TIGER(T5ForConditionalGeneration):
         r"""
             input_ids [B,L]  attention_mask [B,L] labels [B,5] (4 id + 1 eos) decoder_input_ids== labels shift
         """
+        # print("1, ",input_ids,"2, ",decoder_input_ids)
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -696,14 +698,17 @@ class TIGER(T5ForConditionalGeneration):
 
 from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM,KwargsForCausalLM,BaseModelOutputWithPast
 from transformers.modeling_outputs import CausalLMOutputWithPast
+import copy
 class LCREC(Qwen3ForCausalLM):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
         super().__init__(config)
         self.temperature = 1.0
-    def set_hyper(self, temperature):
-        self.temperature = temperature
+    def set_hyper(self,args,tokenizer):
+        self.temperature = args.temperature
+        self.args = args
+        self.tokenizer = tokenizer
     def ranking_loss(self, shift_logits, shift_labels):
         loss_fct = CrossEntropyLoss()
         shift_logits = shift_logits.view(-1, self.config.vocab_size)
@@ -755,6 +760,28 @@ class LCREC(Qwen3ForCausalLM):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
+        if labels is not None and labels.shape[1] != input_ids.shape[1]:
+
+            input_ids = torch.cat([input_ids, labels,torch.tensor([[self.args.token_eos_id]]*labels.shape[0],dtype=input_ids.dtype,device=input_ids.device)], dim=-1)
+            attention_mask = torch.cat(
+                [
+                    attention_mask,
+                    torch.ones(
+                        (attention_mask.shape[0], labels.shape[1]+1),
+                        dtype=attention_mask.dtype,
+                        device=attention_mask.device,
+                    ),
+                ],
+                dim=-1,
+            )
+            valid_label_len =  labels.shape[1]+1
+            labels = copy.deepcopy(input_ids)
+            if self.args.only_train_response:
+                labels[:, :-valid_label_len] = -100
+
+            
+            
+
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -775,16 +802,21 @@ class LCREC(Qwen3ForCausalLM):
         )
 
         hidden_states = outputs.last_hidden_state
-        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss,logits_to_keep==0意味着全序列都用 
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])
 
         loss = None
         if labels is not None:
-            # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss = self.total_loss(shift_logits, shift_labels)
+            if labels.shape[1] == logits.shape[1]:
+                # Shift so that tokens < n predict n
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
+                loss = self.total_loss(shift_logits, shift_labels)
+            else:
+                assert False
+
+            #     loss = torch.tensor(10.0,requires_grad=True).to(logits.device)
 
         return CausalLMOutputWithPast(
             loss=loss,

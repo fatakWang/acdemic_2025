@@ -8,6 +8,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 from collections import defaultdict
 import torch.distributed as dist
+from torch.utils.data import ConcatDataset
 import logging
 import re
 import pdb
@@ -468,6 +469,71 @@ class SemanticsTokenCollator(object):
         """
 
         return inputs
+
+class LcrecCollator(object):
+    def __init__(self, args, tokenizer):
+        self.args = args
+        self.only_train_response = args.only_train_response
+        self.tokenizer = tokenizer
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+        # print(self.tokenizer.model_max_length)
+        
+
+    def __call__(self, batch):
+
+        input_texts = [d["input_ids"] for d in batch]
+        full_texts = [d["labels"] + self.tokenizer.eos_token for d in batch]
+
+        inputs = self.tokenizer(
+            text = full_texts,
+            text_target = input_texts,
+            return_tensors="pt",
+            padding="longest",
+            max_length=self.tokenizer.model_max_length,
+            truncation=True,
+            return_attention_mask=True,
+        )
+        labels = copy.deepcopy(inputs["input_ids"])
+        if self.only_train_response:
+            # ignore padding
+            labels[labels == self.tokenizer.pad_token_id] = -100
+            # ignore input text
+            labels[torch.where(inputs["labels"] != self.tokenizer.pad_token_id)] = -100
+
+        inputs["labels"] = labels
+
+
+        return inputs
+    
+class LcrecTestCollator(object):
+    def __init__(self, args, tokenizer):
+        self.args = args
+        
+        self.tokenizer = tokenizer
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+
+    def __call__(self, batch):
+        input_texts = [d["input_ids"] for d in batch]
+        targets = [d["labels"] for d in batch]
+        inputs = self.tokenizer(
+            text=input_texts,
+            padding_side="left",
+            return_tensors="pt",
+            padding="longest",
+            max_length=self.tokenizer.model_max_length,
+            truncation=True,
+            return_attention_mask=True,
+        )
+        inputs["labels"] = self.tokenizer(targets,
+                                          return_tensors="pt",
+                                          padding="longest",
+                                          max_length=self.tokenizer.model_max_length,
+                                          truncation=True,
+                                          return_attention_mask=True)["input_ids"]
+        return inputs
+
 
 class BaseDataset(Dataset):
     def __init__(self, args):
@@ -1203,84 +1269,46 @@ class PreferenceObtainDataset(BaseDataset):
         input, output = self._get_text_data(d, prompt)
 
         return dict(input_ids=input, labels=output)
-# 冗余的，可以测试一下看看，然后删掉
-class SeqRecTestDataset(BaseDataset):
+
+class lcrecDataset(object):
+    def __init__(self, args, mode ,**kwargs):
+        assert args.model_code in ["lcrec"]
+        if mode == "train":
+            tasks = args.tasks.split(",")
+            train_prompt_sample_num = [int(_) for _ in args.train_prompt_sample_num.split(",")]
+            assert len(tasks) == len(train_prompt_sample_num), "prompt sample number does not match task number"
+            train_data_sample_num = [int(_) for _ in args.train_data_sample_num.split(",")]
+            assert len(tasks) == len(train_data_sample_num), "data sample number does not match task number"
+
+            train_datasets = []
+            for task, prompt_sample_num,data_sample_num in zip(tasks,train_prompt_sample_num,train_data_sample_num):
+                if task.lower() == "seqrec":
+                    dataset = SeqRecDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
+                elif task.lower() == "item2index" or task.lower() == "index2item":
+                    dataset = ItemFeatDataset(args, task=task.lower(), prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
+                elif task.lower() == "fusionseqrec":
+                    dataset = FusionSeqRecDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
+                elif task.lower() == "itemsearch":
+                    dataset = ItemSearchDataset(args, mode="train", prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
+                elif task.lower() == "preferenceobtain":
+                    dataset = PreferenceObtainDataset(args, prompt_sample_num=prompt_sample_num, sample_num=data_sample_num)
+                else:
+                    raise NotImplementedError
+                train_datasets.append(dataset)
+            self.dataset_ = ConcatDataset(train_datasets)
+        elif mode=="valid":
+            self.dataset_ = SeqRecDataset(args,"valid",prompt_sample_num = args.valid_prompt_sample_num)
+        elif mode=="test":
+            self.dataset_ = SeqRecDataset(args,"test")
+
+    def get_all_items(self):
+        return self.dataset_.datasets[0].get_all_items()
     
-
-    def __init__(self, args, prompt_id=0, sample_num=-1):
-        super().__init__(args)
-
-        self.prompt_id = prompt_id
-        self.sample_num = sample_num
-
-        self.prompt = all_prompt["seqrec"][self.prompt_id]
-
-        # load data
-        self._load_data()
-        self._remap_items()
-
-        self.inter_data = self._process_test_data()
-
-    def _load_data(self):
-
-        with open(os.path.join(self.data_path, self.dataset + ".inter.json"), 'r') as f:
-            self.inters = json.load(f)
-        with open(os.path.join(self.data_path, self.dataset + self.index_file), 'r') as f:
-            self.indices = json.load(f)
-
-
-    def _remap_items(self):
-
-        self.remapped_inters = dict()
-        for uid, items in self.inters.items():
-            new_items = ["".join(self.indices[str(i)]) for i in items]
-            self.remapped_inters[uid] = new_items
-
-    def _process_test_data(self):
-
-        inter_data = []
-        for uid in self.remapped_inters:
-            items = self.remapped_inters[uid]
-            one_data = dict()
-            # one_data["user"] = uid
-            one_data["item"] = items[-1]
-            history = items[:-1]
-            if self.max_his_len > 0:
-                history = history[-self.max_his_len:]
-            if self.add_prefix:
-                history = [str(k + 1) + ". " + item_idx for k, item_idx in enumerate(history)]
-            one_data["inters"] = self.his_sep.join(history)
-            inter_data.append(one_data)
-
-        if self.sample_num > 0:
-            all_inter_idx = range(len(inter_data))
-            sample_idx = np.random.choice(all_inter_idx, self.sample_num, replace=False)
-
-            inter_data = np.array(inter_data)[sample_idx].tolist()
-
-        return inter_data
-
-    def set_prompt(self, prompt_id):
-        self.prompt_id = prompt_id
-
-        self.prompt = all_prompt["seqrec"][self.prompt_id]
+    def get_new_tokens(self):
+        return self.dataset_.datasets[0].get_new_tokens()
 
     def __len__(self):
-
-        return len(self.inter_data)
-
-    def _get_text_data(self, data, prompt):
-
-        instruction = prompt["instruction"].format(**data)
-        response = prompt["response"].format(**data)
-
-        input = sft_prompt.format(instruction=instruction, response="")
-
-        return input, response
-
+        return len(self.dataset_)
+    
     def __getitem__(self, index):
-
-        d = self.inter_data[index]
-        input, target = self._get_text_data(d, self.prompt)
-
-        return dict(input_ids=input, labels=target)
+        return self.dataset_[index]

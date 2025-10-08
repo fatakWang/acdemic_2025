@@ -1,32 +1,40 @@
 seed: 42
 project_root: "C:\\Users\\fatak\\Desktop\\master_graduate\\LLM4rec_code\\hf_transformer_recsys\\test_run"
 project_name: test_run
-task_name: "tiger_debug_0817"
-output_dir: "C:\\Users\\fatak\\Desktop\\master_graduate\\LLM4rec_code\\hf_transformer_recsys\\test_run\\tiger_debug_0817"
+task_name: "lcre_debug_1006"
+output_dir: "C:\\Users\\fatak\\Desktop\\master_graduate\\LLM4rec_code\\hf_transformer_recsys\\test_run\\lcre_debug_1006"
 task_code : training # "hp_search" "test"  "training"
 is_online: False 
 
 
 # data
-model_code: "tiger"
+model_code: "lcrec"
 dataset : "Instruments"
 data_path : "C:\\Users\\fatak\\Desktop\\master_graduate\\LLM4rec_code\\hf_transformer_recsys\\data\\processed_data"
 max_his_len : 20
 debug: False
-train_data_sample_num: -1
+tasks: seqrec,item2index,index2item,fusionseqrec,itemsearch,preferenceobtain
+train_data_sample_num: -1,-1,-1,100000,-1,-1
+train_prompt_sample_num: 1,1,1,1,1,1
+valid_prompt_sample_num: 2
 test_sample_num: -1
+his_sep: ", "
+index_file: ".index.json"
+add_prefix: False
+sample_valid: True
+valid_prompt_id: 0
 
 # trainer
 gradient_checkpointing: False
 resume_from_checkpoint: False
-lr: 0.001
+lr: 0.0005
 weight_decay: 0.02
-per_device_batch_size: 200
+per_device_batch_size: 1
 gradient_accumulation_steps: 1
 warmup_ratio: 0.001
 epochs: 200
 weight_decay: 0.01
-lr_scheduler_type: cosine
+lr_scheduler_type: constant
 optim: adamw_torch
 save_total_limit: 2
 eval_save_strategy: "epoch"
@@ -35,27 +43,19 @@ metric_for_best_model: eval_loss
 greater_is_better: False
 label_names: ["labels"]
 early_stopping_patience: 20
+only_train_response: True
 
 # model - t5-small config
+base_model : "Qwen/Qwen3-0.6B" # for training : [t5-small],for test :[dir]
+fp16: False
+bf16: True
+deepspeed: 
 temperature: 1.0
-base_model : "t5-small" # for training : [t5-small],for test :[dir]
-vocab_size: 32128
-d_ff: 2048
-d_kv: 64
-d_model: 512
-decoder_start_token_id: 0
-dropout_rate: 0.1
-eos_token_id: 1
-initializer_factor: 1.0
-is_encoder_decoder: true
-layer_norm_epsilon: 1.e-06
-model_type: "t5"
-n_positions: 512
-num_heads: 8
-num_layers: 6
-output_past: true
-pad_token_id: 0
-relative_attention_num_buckets: 32
+lora_r: 8
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules: "q_proj,v_proj,k_proj,o_proj,gate_proj,down_proj,up_proj" # attention qwen should 
+lora_modules_to_save: embed_tokens
 
 # generate
 max_new_tokens: 10
@@ -70,4 +70,3 @@ hp_search_cate:
   lr: [0.0001,0.001,0.01]
 hp_search_float: {}
 hp_search_bind: {}
-

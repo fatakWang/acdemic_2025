@@ -21,6 +21,9 @@ PURPLE = '\033[35m'
 BOLD = '\033[1m'
 RESET = '\033[0m'
 
+world_size = int(os.environ.get("WORLD_SIZE", 1))
+ddp = world_size != 1
+
 class DynamicClass:
     def __init__(self, input_dict):
         for key, value in input_dict.items():
@@ -136,6 +139,7 @@ dataset_dict = {
         "caser": SasRecDataset,
         "hgn": SasRecDataset,
         "tiger": SemanticsTokenDataset,
+        "lcrec": lcrecDataset,
     }
 
 def config_factory(args):
@@ -157,8 +161,21 @@ def model_factory(args):
         "caser": baseline_model.caser,
         "hgn": baseline_model.hgn,
         "tiger": baseline_model.TIGER,
+        "lcrec": baseline_model.LCREC,
     }
-    return model_dict[args.model_code](config_factory(args))
+    if args.model_code in ["lcrec"]:
+        
+        local_rank = int(os.environ.get("LOCAL_RANK") or 0)
+        if ddp:
+            device_map = {"": local_rank}
+        else:
+            device_map = "auto"
+        return model_dict[args.model_code].from_pretrained(args.base_model,
+                    load_in_4bit=True,
+                    torch_dtype=torch.bfloat16,
+                    device_map=device_map,)
+    else:
+        return model_dict[args.model_code](config_factory(args))
 
 def load_datasets(args):
     train_data = dataset_dict[args.model_code](args=args,mode="train",neg_sample_num=args.train_data_sample_num)
@@ -166,10 +183,16 @@ def load_datasets(args):
     return train_data, valid_data
 
 def creat_tokenizer(args):
+    tokenzier_dict = {
+        "tiger": transformers.AutoTokenizer,
+        "lcrec": transformers.AutoTokenizer,
+    }
     if args.model_code in ["tiger"]:
-        tokenzier_dict = {
-            "tiger": transformers.T5Tokenizer
-        }
+        return tokenzier_dict[args.model_code].from_pretrained(
+            args.base_model,
+            model_max_length=512,
+        )
+    elif args.model_code in ["lcrec"]:
         return tokenzier_dict[args.model_code].from_pretrained(
             args.base_model,
             model_max_length=512,
@@ -184,6 +207,7 @@ collator_dict = {
     "caser": None,
     "hgn": None,
     "tiger": SemanticsTokenCollator,
+    "lcrec": LcrecCollator,
 }
 
 def creat_collator(args,tokenizer):
@@ -198,11 +222,12 @@ def creat_trainer(args,model,train_data,valid_data,tokenizer):
         model=model,
         train_dataset=train_data,
         eval_dataset=valid_data,
-        compute_metrics=compute_metrics_object if args.model_code  not in ["tiger"] else None,
+        compute_metrics=compute_metrics_object if args.model_code  not in ["tiger","lcrec"] else None,
         args=transformers.TrainingArguments( # here
             seed=args.seed,
             run_name=args.task_name,
             per_device_train_batch_size=args.per_device_batch_size,
+            gradient_checkpointing=args.gradient_checkpointing,
             per_device_eval_batch_size=args.per_device_batch_size,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             warmup_ratio=args.warmup_ratio, # 0.01
@@ -223,6 +248,10 @@ def creat_trainer(args,model,train_data,valid_data,tokenizer):
             batch_eval_metrics=True,
             eval_delay= 1 if args.eval_save_strategy=="epoch" else 2000,
             prediction_loss_only=False if args.model_code not in ["tiger"] else True,
+            fp16=args.fp16 if args.model_code  in ["lcrec"] else None,
+            bf16=args.bf16 if args.model_code  in ["lcrec"] else None, 
+            deepspeed=args.deepspeed if args.model_code  in ["lcrec"] else None,
+            ddp_find_unused_parameters=False if ddp else None,
             # no_cuda=True,
         ),
         tokenizer=tokenizer,
@@ -352,15 +381,29 @@ def prefix_allowed_tokens_fn(candidate_trie):
     def prefix_allowed_tokens(batch_id, sentence):
         sentence = sentence.tolist()
         trie_out = candidate_trie.get(sentence)
+        # print(f"1 -> {sentence} {trie_out}")
         return trie_out
 
+    return prefix_allowed_tokens
+
+def prefix_allowed_tokens_fn_lcrec(candidate_trie,start_token_list):
+    def prefix_allowed_tokens(batch_id, sentence):
+        sentence = sentence.tolist()
+        for i in range(len(candidate_trie)):
+            if sentence[i:i+len(start_token_list)] == start_token_list:
+                sentence = sentence[i:]
+                break
+        
+        trie_out = candidate_trie.get(sentence)
+        # print(f"1 -> {sentence} {trie_out}")
+        return trie_out
     return prefix_allowed_tokens
 
 def get_topk_results(predictions, scores, targets, k, all_items=None):
     results = []
     B = len(targets)
     # predictions = [_.split("Response:")[-1] for _ in predictions]
-    predictions = [_.strip().replace(" ","") for _ in predictions]
+    predictions = [_.strip().replace(" ","").split("Response:")[-1] for _ in predictions]
     targets = [_.strip().replace(" ","") for _ in targets]
     # print(predictions)##################
     if all_items is not None:
@@ -433,14 +476,24 @@ class generateComputeMetrics:
         self.tokenizer = tokenizer
         tokenizer.add_tokens(test_data.get_new_tokens())
         all_items = test_data.get_all_items() | train_data.get_all_items()
-        self.candidate_trie = Trie(
-            [
-                [0] + tokenizer.encode(candidate)
-                for candidate in all_items
-            ]
-        )
+        if args.model_code in ["tiger"]:
+            self.candidate_trie = Trie(
+                [
+                    [0] + tokenizer.encode(candidate)
+                    for candidate in all_items
+                ]
+            )
+            self.prefix_allowed_tokens = prefix_allowed_tokens_fn(self.candidate_trie)
+        elif args.model_code in ["lcrec"]:
+            self.candidate_trie = Trie(
+                [
+                    tokenizer("Response:")["input_ids"][1:] + tokenizer.encode(candidate) + [tokenizer.eos_token_id]
+                    for candidate in all_items
+                ]
+            )
+            self.prefix_allowed_tokens = prefix_allowed_tokens_fn_lcrec(self.candidate_trie,tokenizer("Response:")["input_ids"][1:])
         self.all_items = all_items
-        self.prefix_allowed_tokens = prefix_allowed_tokens_fn(self.candidate_trie)
+        
         self.metrics = [f"recall@{k}" for k in self.ks] + [f"ndcg@{k}" for k in self.ks] 
 
     def model_generate_compute_metrics(self,input_ids,attention_mask,labels):
@@ -457,7 +510,10 @@ class generateComputeMetrics:
                     early_stopping=True,
                 )
         output_ids = output["sequences"]
-        scores = output["sequences_scores"]
+        if self.args.num_beams==1:
+            scores = torch.ones(output_ids.shape[0])
+        else:
+            scores = output["sequences_scores"]
         output = self.tokenizer.batch_decode(
                 output_ids, skip_special_tokens=True
             )
@@ -491,7 +547,15 @@ class generateComputeMetrics:
             return results_all
         else:
             return results
+from peft import (
+    TaskType,
+    LoraConfig,
+    get_peft_model,
+    prepare_model_for_kbit_training,
+    set_peft_model_state_dict,
+    
 
+)
 
 def get_model_data(args):
     set_seed(args.seed)
@@ -507,13 +571,38 @@ def get_model_data(args):
         tokenizer.add_tokens(train_data.get_new_tokens())
         args.vocab_size = len(tokenizer)
         tokenizer.save_pretrained(args.output_dir)
+    elif args.model_code in ["lcrec"]:
+        args.token_eos_id = tokenizer.eos_token_id
+        tokenizer.add_tokens(train_data.dataset_.datasets[0].get_new_tokens())
+        args.vocab_size = len(tokenizer)
+        tokenizer.save_pretrained(args.output_dir)
 
     model = model_factory(args)
     # special process
     if args.model_code == "lightgcn":
         model.Graph = train_data.A.coalesce()
-    elif args.model_code in ["tiger"]:
+    elif args.model_code in ["tiger","lcrec"]:
         model.resize_token_embeddings(len(tokenizer))
+        model.set_hyper(args,tokenizer)
+    if args.model_code in ["lcrec"]:
+        model = prepare_model_for_kbit_training(model)
+        config = LoraConfig(
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        target_modules=args.lora_target_modules.split(","),
+        # modules_to_save=args.lora_modules_to_save.split(","),
+        trainable_token_indices=tokenizer.convert_tokens_to_ids(train_data.dataset_.datasets[0].get_new_tokens()),
+        lora_dropout=args.lora_dropout,
+        bias="none",
+        inference_mode=False,
+        task_type=TaskType.CAUSAL_LM,
+    )
+        model = get_peft_model(model, config)
+        # model.get_output_embeddings().weight = model.get_input_embeddings().weight
+        # todo resume training
+        if local_rank == 0:
+            model.print_trainable_parameters()
+
     if local_rank == 0:
         print(vars(args))
         print(model)
@@ -526,7 +615,7 @@ def unsqueeze_input(x):
 
 def load_args():
     parser = argparse.ArgumentParser(description='LLM4REC')
-    parser.add_argument("--config", type=str,default="C:\\Users\\fatak\\Desktop\\master_graduate\\LLM4rec_code\\hf_transformer_recsys\\config_file\\tiger_debug.yaml")
+    parser.add_argument("--config", type=str,default="C:\\Users\\fatak\\Desktop\\master_graduate\\LLM4rec_code\\hf_transformer_recsys\\config_file\\lcrec_debug.yaml")
     args = parser.parse_args()
     args = load_config(args.config)
     if not args.is_online:
@@ -560,13 +649,17 @@ def get_metric_fromargs(args):
     model.config.use_cache = True
     model.eval()
     with torch.no_grad(): 
-        if args.model_code in ["tiger"]:
+        
+        if args.model_code in ["tiger","lcrec"]:
             # trainer.args.prediction_loss_only = False
             compute_metrics_object = generateComputeMetrics(args,model,train_data,test_dataset,tokenizer)
             trainer.args.include_for_metrics = ["inputs"]
             trainer.args.prediction_loss_only = False
             trainer.compute_metrics = compute_metrics_object
-            trainer.args.per_device_eval_batch_size = 6 * args.per_device_batch_size//args.num_beams
+            trainer.args.per_device_eval_batch_size = 6 * args.per_device_batch_size//args.num_beams if args.per_device_batch_size>=args.num_beams else 1
+        if args.model_code == "lcrec":
+            trainer.data_collator = LcrecTestCollator(args,tokenizer)
+            trainer.args.per_device_eval_batch_size = args.per_device_batch_size//args.num_beams if args.per_device_batch_size>=args.num_beams else 1
         _,_,metrics = trainer.predict(test_dataset)
         trainer.log(metrics)
     return metrics
