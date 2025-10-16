@@ -3,7 +3,8 @@ import os
 # wandb login
 
 from transformers import EarlyStoppingCallback
-
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 import torch
 import transformers
 from baseline_config import *

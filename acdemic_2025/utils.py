@@ -252,7 +252,8 @@ def creat_trainer(args,model,train_data,valid_data,tokenizer):
             bf16=args.bf16 if args.model_code  in ["lcrec"] else None, 
             deepspeed=args.deepspeed if args.model_code  in ["lcrec"] else None,
             ddp_find_unused_parameters=False if ddp else None,
-            # no_cuda=True,
+            resume_from_checkpoint=args.resume_from_checkpoint
+            no_cuda=args.no_cuda,
         ),
         tokenizer=tokenizer,
         data_collator=creat_collator(args,tokenizer),
@@ -315,8 +316,8 @@ def compute_metrics(eval_pred):
     # 对于T5、llama来说，验证集早停就用loss来吧。
     logits, labels = eval_pred
     pos_items = labels[0]  # shape: (B, 1)
-    logits = torch.tensor(logits)
-    pos_items = torch.tensor(pos_items)
+    logits = torch.as_tensor(logits)
+    pos_items = torch.as_tensor(pos_items)
     
     ks = [5, 10, 20, 50]
     max_k = max(ks)
@@ -603,6 +604,22 @@ def get_model_data(args):
         if local_rank == 0:
             model.print_trainable_parameters()
 
+    if args.resume_from_checkpoint:
+        if args.model_code in ["lcrec"]:
+            checkpoint_name = os.path.join(
+                args.resume_from_checkpoint, "adapter_model.safetensors"
+            )
+            args.resume_from_checkpoint = False
+            if os.path.exists(checkpoint_name):
+                if local_rank == 0:
+                    print(f"Restarting from {checkpoint_name}")
+                adapters_weights = torch.load(checkpoint_name)
+                set_peft_model_state_dict(model, adapters_weights)
+            else:
+                if local_rank == 0:
+                    print(f"Checkpoint {checkpoint_name} not found")
+
+
     if local_rank == 0:
         print(vars(args))
         print(model)
@@ -615,11 +632,16 @@ def unsqueeze_input(x):
 
 def load_args():
     parser = argparse.ArgumentParser(description='LLM4REC')
-    parser.add_argument("--config", type=str,default="C:\\Users\\fatak\\Desktop\\master_graduate\\LLM4rec_code\\hf_transformer_recsys\\config_file\\lcrec_debug.yaml")
+    parser.add_argument("--config", type=str,default="/home/zhanghanlin/wangxu/acdemic_2025/config_file/caser_debug.yaml")
+    parser.add_argument("--wandb_api_file", type=str,default="/home/zhanghanlin/wangxu/acdemic_2025/config_file/wandb_api.yaml")
     args = parser.parse_args()
+    api_args = load_config(args.wandb_api_file)
     args = load_config(args.config)
+    os.environ["WANDB_API_KEY"] = api_args.WANDB_API_KEY
     if not args.is_online:
         os.environ['WANDB_MODE'] = 'offline'
+    else:
+        wandb.login()
     os.environ["WANDB_PROJECT"]=args.project_name
     return args
 
@@ -627,29 +649,20 @@ def get_metric_fromargs(args):
     model,train_data, valid_data,tokenizer = get_model_data(args)
     trainer = creat_trainer(args,model,train_data,valid_data,tokenizer)
 
-    if args.task_code == "training":
+    if args.task_code in ["training","hp_search"]:
         model.config.use_cache = False
-        if args.resume_from_checkpoint:
-            try:
-                trainer.train(resume_from_checkpoint=True)
-            except ValueError as e:
-                if "No valid checkpoint found in output directory" in str(e):
-                    print(e)
-                    trainer.train()
-        else:
-            trainer.train()
+        trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     elif args.task_code == "test":
-        model = model.from_pretrained(args.output_dir,
-                low_cpu_mem_usage=True,
-                device_map="auto"
-            )
+        # 重新load 模型 tokenizer...
+        assert args.resume_from_checkpoint is not False
+        if tokenizer is not None:
+            tokenizer = transformers.AutoTokenizer.from_pretrained(args.resume_from_checkpoint)
     trainer.save_state()
     trainer.save_model(output_dir=args.output_dir)
     test_dataset = load_test_dataset(args)
     model.config.use_cache = True
     model.eval()
     with torch.no_grad(): 
-        
         if args.model_code in ["tiger","lcrec"]:
             # trainer.args.prediction_loss_only = False
             compute_metrics_object = generateComputeMetrics(args,model,train_data,test_dataset,tokenizer)
@@ -661,7 +674,7 @@ def get_metric_fromargs(args):
             trainer.data_collator = LcrecTestCollator(args,tokenizer)
             trainer.args.per_device_eval_batch_size = args.per_device_batch_size//args.num_beams if args.per_device_batch_size>=args.num_beams else 1
         _,_,metrics = trainer.predict(test_dataset)
-        trainer.log(metrics)
+        # trainer.log(metrics)
     return metrics
 
 def optuna_args_change(trial,origin_args):
@@ -697,17 +710,6 @@ def optuna_args_change(trial,origin_args):
 def objective(trial,origin_args):
     args = optuna_args_change(trial,origin_args)
     wandb.init(project=args.project_name,name=args.task_name,config=args)
-    def code_no_used():
-        # model,train_data, valid_data = get_model_data(args)
-            
-        # trainer = creat_trainer(args,model,train_data,valid_data)
-        # trainer.train()
-        # trainer.save_state()
-        # trainer.save_model(output_dir=args.output_dir)
-        # test_dataset = load_test_dataset(args)
-        # _,_,metrics = trainer.predict(test_dataset)
-        # trainer.log(metrics)
-        pass
     metrics = get_metric_fromargs(args)
     wandb.finish()
     return metrics[args.hp_search_metric]
