@@ -1,0 +1,72 @@
+seed: 42
+project_root: "/home/zhanghanlin/wangxu/test_run"
+project_name: test_run
+task_name: "tiger_run_1014"
+task_code : training # "hp_search" "test"  "training"
+is_online: True
+
+
+# data
+model_code: "tiger"
+dataset : "Instruments"
+data_path : "/home/zhanghanlin/wangxu/acdemic_2025/data/processed_data"
+max_his_len : 20
+debug: False
+train_data_sample_num: -1
+test_sample_num: -1
+
+# trainer
+gradient_checkpointing: False
+resume_from_checkpoint: False
+lr: 0.0005
+weight_decay: 0.01
+per_device_batch_size: 400
+gradient_accumulation_steps: 1
+warmup_ratio: 0.0001
+epochs: 200
+lr_scheduler_type: cosine
+optim: adamw_torch
+save_total_limit: 2
+eval_save_strategy: "epoch"
+logging_steps: 10
+metric_for_best_model: eval_loss
+greater_is_better: False
+label_names: ["labels"]
+early_stopping_patience: 20
+no_cuda: False
+
+# model - t5-small config
+temperature: 1.0
+base_model : "t5-small" # for training : [t5-small],for test :[dir]
+vocab_size: 32128
+d_ff: 2048
+d_kv: 64
+d_model: 512
+decoder_start_token_id: 0
+dropout_rate: 0.1
+eos_token_id: 1
+initializer_factor: 1.0
+is_encoder_decoder: true
+layer_norm_epsilon: 1.e-06
+model_type: "t5"
+n_positions: 512
+num_heads: 8
+num_layers: 6
+output_past: true
+pad_token_id: 0
+relative_attention_num_buckets: 32
+
+# generate
+max_new_tokens: 10
+num_beams: 10
+
+# hp_search
+grid_search: True
+hp_search_trial_num: 3
+hp_search_direction: "maximize"
+hp_search_metric: "test_recall@10"
+hp_search_cate:
+  lr: [0.0001,0.001,0.01]
+hp_search_float: {}
+hp_search_bind: {}
+

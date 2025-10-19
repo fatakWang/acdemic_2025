@@ -1,0 +1,72 @@
+seed: 42
+project_root: "/home/zhanghanlin/wangxu/test_run"
+project_name: test_run
+task_name: "lcrec_test_1016"
+is_online: True
+task_code : test # "hp_search" "test"  "training"
+
+
+# data
+model_code: "lcrec"
+dataset : "Instruments"
+data_path : "/home/zhanghanlin/wangxu/acdemic_2025/data/processed_data"
+max_his_len : 20
+debug: False
+tasks: seqrec,item2index,index2item,fusionseqrec,itemsearch,preferenceobtain
+train_data_sample_num: -1,-1,-1,100000,-1,-1
+train_prompt_sample_num: 1,1,1,1,1,1
+valid_prompt_sample_num: 2
+test_sample_num: -1
+his_sep: ", "
+index_file: ".index.json"
+add_prefix: False
+sample_valid: True
+valid_prompt_id: 0
+
+# trainer
+gradient_checkpointing: False
+per_device_test_batch_size: 50
+resume_from_checkpoint: /home/zhanghanlin/wangxu/test_run/lcrec_run_1014
+lr: 0.00002
+weight_decay: 0.01
+per_device_batch_size: 16
+gradient_accumulation_steps: 1
+warmup_ratio: 0.001
+epochs: 4
+lr_scheduler_type: constant
+optim: adamw_torch
+save_total_limit: 2
+eval_save_strategy: "epoch"
+logging_steps: 10
+metric_for_best_model: eval_loss
+greater_is_better: False
+label_names: ["labels"]
+early_stopping_patience: 20
+only_train_response: True
+no_cuda: False
+
+# model - t5-small config
+base_model : "Qwen/Qwen3-0.6B" # for training : [t5-small],for test :[dir]
+fp16: False
+bf16: True
+deepspeed: 
+temperature: 1.0
+lora_r: 8
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules: "q_proj,v_proj,k_proj,o_proj,gate_proj,down_proj,up_proj" # attention qwen should 
+lora_modules_to_save: embed_tokens
+
+# generate
+max_new_tokens: 10
+num_beams: 10
+
+# hp_search
+grid_search: True
+hp_search_trial_num: 3
+hp_search_direction: "maximize"
+hp_search_metric: "test_recall@10"
+hp_search_cate:
+  lr: [0.0001,0.001,0.01]
+hp_search_float: {}
+hp_search_bind: {}

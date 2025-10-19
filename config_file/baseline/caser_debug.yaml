@@ -1,0 +1,53 @@
+seed: 42
+project_root: "./test_run"
+project_name: test_run_1014
+task_name: "caser_debug_1010"
+is_online: True
+task_code: "hp_search"
+
+# data
+model_code: "caser"
+train_data_sample_num : 1 
+dataset : "Instruments"
+data_path : "/home/zhanghanlin/wangxu/acdemic_2025/data/processed_data"
+max_his_len : 7
+add_prefix : False
+test_sample_num: -1 # -1 表示全用
+debug: False
+
+# trainer
+lr: 0.001
+weight_decay: 0.02
+per_device_batch_size: 400
+gradient_accumulation_steps: 1
+warmup_ratio: 0.001
+epochs: 2
+lr_scheduler_type: constant
+optim: adamw_torch
+save_total_limit: 2
+eval_save_strategy: epoch
+logging_steps: 100
+metric_for_best_model: eval_recall@10
+greater_is_better: True
+label_names: ["pos_item","neg_item"]
+early_stopping_patience: 20
+gradient_checkpointing: False
+resume_from_checkpoint: False
+no_cuda: True
+# model
+dropout: 0.3
+d_model: 64
+n_h: 8
+n_v: 4
+seq_len: 7
+
+# hp_search
+grid_search: True
+hp_search_trial_num: 3
+hp_search_direction: "maximize"
+hp_search_metric: "test_recall@10"
+hp_search_cate:
+  lr: [0.0001,0.001,0.01]
+hp_search_float: {}
+hp_search_bind: {}
+

@@ -1,0 +1,53 @@
+seed: 42
+project_root: "C:\\Users\\fatak\\Desktop\\master_graduate\\LLM4rec_code\\hf_transformer_recsys\\test_run"
+project_name: test_run
+task_name: "lightgcn_debug_0723"
+is_online: True
+task_code: "hp_search"
+
+# data
+model_code: "lightgcn"
+train_data_sample_num : 1 
+dataset : "Instruments"
+data_path : "C:\\Users\\fatak\\Desktop\\master_graduate\\LLM4rec_code\\hf_transformer_recsys\\data\\processed_data"
+max_his_len : 20
+add_prefix : False
+test_sample_num: -1 # -1 表示全用
+debug: False
+
+# trainer
+lr: 0.001
+weight_decay: 0.02
+per_device_batch_size: 400
+gradient_accumulation_steps: 1
+warmup_ratio: 0.001
+epochs: 20
+lr_scheduler_type: constant
+optim: adamw_torch
+save_total_limit: 2
+eval_save_strategy: epoch
+logging_steps: 100
+metric_for_best_model: eval_loss
+greater_is_better: False
+label_names: ["pos_item","neg_item"]
+early_stopping_patience: 20
+gradient_checkpointing: False
+resume_from_checkpoint: False
+no_cuda: True
+# model
+vocab_size: -1 # 自适应生成，而非配置
+d_model: 128
+seq_len: 20
+dropout: 0.3
+num_layers: 4
+
+# hp_search
+grid_search: True
+hp_search_trial_num: 3
+hp_search_direction: "maximize"
+hp_search_metric: "test_recall@10"
+hp_search_cate:
+  lr: [0.0001,0.001,0.01]
+hp_search_float: {}
+hp_search_bind: {}
+
