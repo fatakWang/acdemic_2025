@@ -424,7 +424,13 @@ class SemanticsTokenDataset(Dataset):
     def __getitem__(self, index):
         d = self.inter_data[index]
         return dict(input_ids=d["inters"], labels=d["item"])
-    
+
+# multi token dataset
+class MultiTokenDataset(SemanticsTokenDataset):
+    def __init__(self, args, tokenizer, mode='train',**kwargs):
+        super().__init__(args, tokenizer, mode)
+
+
 class SemanticsTokenCollator(object):
     def __init__(self, args, tokenizer,**kwargs):
         self.args = args
